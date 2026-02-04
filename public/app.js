@@ -155,13 +155,22 @@ joinBtn.addEventListener('click', () => {
     if (!isPoweredOn) return;
     const room = roomInput.value.trim();
     if (room) {
+        // If we were already in a room, disconnect existing peers
+        if (roomId && roomId !== room) {
+            Object.keys(peers).forEach(key => {
+                peers[key].close();
+                delete peers[key];
+            });
+        }
+
         roomId = room;
         socket.emit('join-room', roomId);
         currentChannel.innerText = roomId;
         statusText.innerText = "CONNECTED";
         statusText.classList.add('connected');
-        joinBtn.disabled = true;
-        roomInput.disabled = true;
+
+        // Keep buttons enabled so we can switch again
+        joinBtn.innerText = "SWAP";
         talkBtn.disabled = false;
     }
 });

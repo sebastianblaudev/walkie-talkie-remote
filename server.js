@@ -21,12 +21,16 @@ io.on('connection', (socket) => {
     console.log('New client connected:', socket.id);
 
     socket.on('join-room', (roomId) => {
+        // Leave all previous rooms
+        const currentRooms = Array.from(socket.rooms);
+        currentRooms.forEach(room => {
+            if (room !== socket.id) {
+                socket.leave(room);
+            }
+        });
+
         socket.join(roomId);
         console.log(`Socket ${socket.id} joined room ${roomId}`);
-
-        // Notify others in room that a new peer joined
-        // Ideally we only want to connect to *other* peers, but for mesh:
-        // We can just broadcast 'user-connected' to the room
         socket.to(roomId).emit('user-connected', socket.id);
     });
 
