@@ -1,0 +1,301 @@
+const getServerUrl = () => {
+    return localStorage.getItem('walkieTalkieServer') || window.location.origin;
+};
+
+let socket = io(getServerUrl());
+
+document.getElementById('server-config-btn').addEventListener('click', () => {
+    const newUrl = prompt('Enter Server URL (e.g., http://192.168.1.50:3000):', getServerUrl());
+    if (newUrl) {
+        localStorage.setItem('walkieTalkieServer', newUrl);
+        window.location.reload();
+    }
+});
+let localStream; // This will now be the PROCESSED stream (dest.stream)
+let roomId;
+let isPoweredOn = false;
+
+// Audio Context & Nodes
+let audioContext;
+let micSource;  // Raw microphone source
+let gainNode;   // Controls volume (PTT)
+let destNode;   // Destination node (feeds PeerConnection)
+let analyser;   // For Visualizer
+let dataArray;
+let canvas, canvasCtx;
+let animationId;
+
+// WebRTC
+const peers = {}; // userId -> RTCPeerConnection
+const rtcConfig = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+};
+
+// DOM Elements
+const powerBtn = document.getElementById('power-btn');
+const joinBtn = document.getElementById('join-btn');
+const talkBtn = document.getElementById('talk-btn');
+const roomInput = document.getElementById('room-input');
+const statusText = document.getElementById('status-text');
+const currentChannel = document.getElementById('current-channel');
+const pttContainer = document.querySelector('.ptt-container');
+const signalStrength = document.querySelector('.signal-strength');
+const brandLogo = document.querySelector('.brand-logo');
+
+// Canvas Setup
+canvas = document.getElementById('visualizer');
+canvasCtx = canvas.getContext('2d');
+
+// Power Button Logic
+powerBtn.addEventListener('click', async () => {
+    isPoweredOn = !isPoweredOn;
+    if (isPoweredOn) {
+        powerBtn.classList.add('active');
+        statusText.innerText = "INITIALIZING...";
+        brandLogo.style.textShadow = "0 0 20px var(--neon-cyan)";
+
+        try {
+            // 1. Get Raw Microphone Stream
+            const rawStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                },
+                video: false
+            });
+
+            // 2. Initialize Audio Context
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+            // 3. Create Nodes
+            micSource = audioContext.createMediaStreamSource(rawStream);
+            gainNode = audioContext.createGain();
+            destNode = audioContext.createMediaStreamDestination();
+            analyser = audioContext.createAnalyser();
+
+            // 4. Connect Graph for Transmission (Mic -> Gain -> Dest)
+            micSource.connect(gainNode);
+            gainNode.connect(destNode);
+
+            // 5. Connect Graph for Visualization (Mic -> Analyser)
+            // We connect Mic directly so we see visualizer even when NOT transmitting (for UX feedback)
+            // Or we could connect gainNode depending on preference. Let's do Mic for "Device Active" feel.
+            micSource.connect(analyser);
+
+            // 6. Set Initial State (Muted)
+            gainNode.gain.value = 0;
+
+            // 7. This is the stream we will add to WebRTC
+            localStream = destNode.stream;
+
+            // Visualizer Setup
+            analyser.fftSize = 256;
+            const bufferLength = analyser.frequencyBinCount;
+            dataArray = new Uint8Array(bufferLength);
+            drawVisualizer();
+
+            statusText.innerText = "STANDBY";
+            signalStrength.classList.add('active');
+            joinBtn.disabled = false;
+        } catch (err) {
+            console.error("Error accessing microphone:", err);
+            alert("Microphone access required!");
+            forcePowerOff();
+        }
+    } else {
+        forcePowerOff();
+    }
+});
+
+function forcePowerOff() {
+    isPoweredOn = false;
+    powerBtn.classList.remove('active');
+    statusText.innerText = "OFFLINE";
+    statusText.className = "";
+    currentChannel.innerText = "--";
+    joinBtn.disabled = true;
+    talkBtn.disabled = true;
+    signalStrength.classList.remove('active');
+    pttContainer.classList.remove('transmitting', 'receiving');
+
+    // Stop all tracks (both raw mic and destination)
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+    }
+
+    // Close connections
+    Object.keys(peers).forEach(key => {
+        peers[key].close();
+        delete peers[key];
+    });
+
+    // Close AudioContext
+    if (audioContext && audioContext.state !== 'closed') {
+        audioContext.close();
+    }
+
+    cancelAnimationFrame(animationId);
+    canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+// Join Room Logic
+joinBtn.addEventListener('click', () => {
+    if (!isPoweredOn) return;
+    const room = roomInput.value.trim();
+    if (room) {
+        roomId = room;
+        socket.emit('join-room', roomId);
+        currentChannel.innerText = roomId;
+        statusText.innerText = "CONNECTED";
+        statusText.classList.add('connected');
+        joinBtn.disabled = true;
+        roomInput.disabled = true;
+        talkBtn.disabled = false;
+    }
+});
+
+// Push-to-Talk Logic
+const startTx = () => {
+    if (!isPoweredOn || !roomId || !gainNode) return;
+    statusText.innerText = "TRANSMITTING";
+    statusText.className = "transmitting";
+    talkBtn.classList.add('talking');
+    pttContainer.classList.add('transmitting');
+
+    // Unmute smoothly
+    gainNode.gain.setTargetAtTime(1, audioContext.currentTime, 0.01);
+};
+
+const stopTx = () => {
+    if (!isPoweredOn || !roomId || !gainNode) return;
+    statusText.innerText = "CONNECTED";
+    statusText.className = "connected";
+    talkBtn.classList.remove('talking');
+    pttContainer.classList.remove('transmitting');
+
+    // Mute smoothly
+    gainNode.gain.setTargetAtTime(0, audioContext.currentTime, 0.01);
+};
+
+// Desktop
+talkBtn.addEventListener('mousedown', startTx);
+window.addEventListener('mouseup', stopTx);
+// Mobile
+talkBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTx(); });
+talkBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTx(); });
+
+
+// Audio Visualizer Logic
+function drawVisualizer() {
+    if (!isPoweredOn) return;
+    animationId = requestAnimationFrame(drawVisualizer);
+
+    analyser.getByteFrequencyData(dataArray);
+
+    canvasCtx.fillStyle = '#050f14';
+    canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const barWidth = (canvas.width / dataArray.length) * 2.5;
+    let barHeight;
+    let x = 0;
+
+    for (let i = 0; i < dataArray.length; i++) {
+        barHeight = dataArray[i] / 2;
+
+        // Color based on height (Low=Blue, High=Red)
+        const r = barHeight + (25 * (i / dataArray.length));
+        const g = 250 * (i / dataArray.length);
+        const b = 255;
+
+        canvasCtx.fillStyle = `rgb(${r},${g},${b})`;
+        canvasCtx.shadowBlur = 10;
+        canvasCtx.shadowColor = "rgba(0, 243, 255, 0.5)";
+
+        canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+
+        x += barWidth + 1;
+    }
+}
+
+
+// --- WebRTC Core ---
+
+socket.on('user-connected', (userId) => {
+    console.log('User connected:', userId);
+    statusText.innerText = "PEER FOUND";
+    createOffer(userId);
+});
+
+function createPeerConnection(targetId) {
+    if (peers[targetId]) return peers[targetId];
+
+    const pc = new RTCPeerConnection(rtcConfig);
+    peers[targetId] = pc;
+
+    if (localStream) {
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+
+    pc.ontrack = (event) => {
+        const remoteAudio = new Audio();
+        remoteAudio.srcObject = event.streams[0];
+        remoteAudio.autoplay = true;
+
+        // Visual RX feedback
+        statusText.innerText = "RECEIVING";
+        pttContainer.classList.add('receiving');
+
+        // Clear RX status logic
+        setTimeout(() => {
+            pttContainer.classList.remove('receiving');
+            if (isPoweredOn && !talkBtn.classList.contains('talking')) {
+                statusText.innerText = "CONNECTED";
+            }
+        }, 1500);
+    };
+
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            socket.emit('ice-candidate', { candidate: event.candidate, target: targetId });
+        }
+    };
+
+    return pc;
+}
+
+async function createOffer(targetId) {
+    const pc = createPeerConnection(targetId);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('offer', { offer, target: targetId });
+}
+
+socket.on('offer', async (data) => {
+    if (!isPoweredOn) return;
+    const pc = createPeerConnection(data.caller);
+    await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit('answer', { answer, target: data.caller });
+});
+
+socket.on('answer', async (data) => {
+    const pc = peers[data.caller];
+    if (pc) await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+});
+
+socket.on('ice-candidate', async (data) => {
+    const pc = peers[data.caller];
+    if (pc) try { await pc.addIceCandidate(data.candidate); } catch (e) { }
+});
+
+socket.on('user-disconnected', (userId) => {
+    if (peers[userId]) {
+        peers[userId].close();
+        delete peers[userId];
+    }
+});

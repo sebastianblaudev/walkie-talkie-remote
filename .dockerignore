@@ -1,0 +1,6 @@
+node_modules/
+android/
+capacitor.config.json
+walkie-talkie.apk
+.DS_Store
+package-lock.json
