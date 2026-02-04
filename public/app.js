@@ -30,8 +30,11 @@ const peers = {}; // userId -> RTCPeerConnection
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-    ]
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' }
+    ],
+    iceCandidatePoolSize: 10
 };
 
 // DOM Elements
@@ -241,15 +244,25 @@ function createPeerConnection(targetId) {
     }
 
     pc.ontrack = (event) => {
+        console.log('Received remote track');
         const remoteAudio = new Audio();
         remoteAudio.srcObject = event.streams[0];
+
+        // Mobile fix: ensure audio can play
         remoteAudio.autoplay = true;
+        remoteAudio.playsInline = true;
+        remoteAudio.muted = false; // Ensure not muted
+
+        // Android/Chrome requires manual play call sometimes
+        const playPromise = remoteAudio.play();
+        if (playPromise !== undefined) {
+            playPromise.catch(error => console.warn("Auto-play prevented:", error));
+        }
 
         // Visual RX feedback
         statusText.innerText = "RECEIVING";
         pttContainer.classList.add('receiving');
 
-        // Clear RX status logic
         setTimeout(() => {
             pttContainer.classList.remove('receiving');
             if (isPoweredOn && !talkBtn.classList.contains('talking')) {
@@ -264,12 +277,19 @@ function createPeerConnection(targetId) {
         }
     };
 
+    pc.onconnectionstatechange = () => {
+        console.log('Connection state:', pc.connectionState);
+    };
+
     return pc;
 }
 
 async function createOffer(targetId) {
     const pc = createPeerConnection(targetId);
-    const offer = await pc.createOffer();
+    const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: false
+    });
     await pc.setLocalDescription(offer);
     socket.emit('offer', { offer, target: targetId });
 }
