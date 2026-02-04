@@ -1,3 +1,8 @@
+// Clear old manual URL once to ensure the new default takes effect
+if (localStorage.getItem('walkieTalkieServer') && localStorage.getItem('walkieTalkieServer').includes('localhost')) {
+    localStorage.removeItem('walkieTalkieServer');
+}
+
 const getServerUrl = () => {
     return localStorage.getItem('walkieTalkieServer') || 'https://walkie-talkie-remote.onrender.com';
 };
