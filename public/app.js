@@ -1,5 +1,5 @@
 const getServerUrl = () => {
-    return localStorage.getItem('walkieTalkieServer') || window.location.origin;
+    return localStorage.getItem('walkieTalkieServer') || 'https://walkie-talkie-remote.onrender.com';
 };
 
 let socket = io(getServerUrl());
