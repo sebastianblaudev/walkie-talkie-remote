@@ -333,3 +333,22 @@ socket.on('user-disconnected', (userId) => {
         delete peers[userId];
     }
 });
+
+// Support / Voluntary Contribution Logic
+document.getElementById('support-btn').addEventListener('click', async () => {
+    try {
+        const response = await fetch(`${getServerUrl()}/create_preference`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        const data = await response.json();
+        if (data.init_point) {
+            window.location.href = data.init_point;
+        }
+    } catch (err) {
+        console.error("Error creating donation link:", err);
+        alert("Could not connect to payment gateway. Check your internet connection.");
+    }
+});

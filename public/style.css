@@ -356,3 +356,29 @@ canvas#visualizer {
     cursor: not-allowed;
     pointer-events: none;
 }
+
+.support-container {
+    text-align: center;
+    margin-top: auto;
+    padding-bottom: 20px;
+}
+
+.tactical-link {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    cursor: pointer;
+    text-decoration: underline;
+    opacity: 0.6;
+    transition: all 0.2s;
+}
+
+.tactical-link:hover {
+    color: var(--neon-cyan);
+    opacity: 1;
+    text-shadow: 0 0 8px var(--neon-cyan);
+}

@@ -12,6 +12,7 @@ const io = new Server(server, {
     }
 });
 
+app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Store active sockets in rooms
@@ -63,6 +64,41 @@ io.on('connection', (socket) => {
         console.log('Client disconnected:', socket.id);
         // Could notify room about disconnection if needed
     });
+});
+
+const { MercadoPagoConfig, Preference } = require('mercadopago');
+
+// Add your Access Token here or as an environment variable
+const client = new MercadoPagoConfig({
+    accessToken: process.env.MP_ACCESS_TOKEN || 'APP_USR-6317427424180639-013020-800419157ca61ee346a069cf70a3df50-1055557166'
+});
+
+app.post('/create_preference', async (req, res) => {
+    try {
+        const preference = new Preference(client);
+        const result = await preference.create({
+            body: {
+                items: [
+                    {
+                        title: 'Tolki - Aporte Voluntario',
+                        quantity: 1,
+                        unit_price: 10.00, // You can change this or make it dynamic
+                        currency_id: 'ARS' // Change to your currency (USD, MXN, etc)
+                    }
+                ],
+                back_urls: {
+                    success: 'https://walkie-talkie-remote.onrender.com',
+                    failure: 'https://walkie-talkie-remote.onrender.com',
+                    pending: 'https://walkie-talkie-remote.onrender.com'
+                },
+                auto_return: 'approved',
+            }
+        });
+        res.json({ id: result.id, init_point: result.init_point });
+    } catch (error) {
+        console.error('Error creating preference:', error);
+        res.status(500).send('Error creating payment preference');
+    }
 });
 
 const PORT = process.env.PORT || 3000;
