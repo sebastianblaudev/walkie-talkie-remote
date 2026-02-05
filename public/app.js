@@ -37,9 +37,23 @@ const rtcConfig = {
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' }
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        // Metered.ca Free STUN/TURN (Common workaround for mobile networks)
+        { urls: 'stun:openrelay.metered.ca:80' },
+        {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            password: 'openrelayproject'
+        },
+        {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            password: 'openrelayproject'
+        }
     ],
-    iceCandidatePoolSize: 10
+    iceCandidatePoolSize: 10,
+    sdpSemantics: 'unified-plan'
 };
 
 // DOM Elements
@@ -78,6 +92,9 @@ powerBtn.addEventListener('click', async () => {
 
             // 2. Initialize Audio Context
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
 
             // 3. Create Nodes
             micSource = audioContext.createMediaStreamSource(rawStream);
@@ -176,8 +193,14 @@ joinBtn.addEventListener('click', () => {
 });
 
 // Push-to-Talk Logic
-const startTx = () => {
+const startTx = async () => {
     if (!isPoweredOn || !roomId || !gainNode) return;
+
+    // Resume AudioContext on every click (Android/Chrome safety)
+    if (audioContext && audioContext.state === 'suspended') {
+        await audioContext.resume();
+    }
+
     statusText.innerText = "TRANSMITTING";
     statusText.className = "transmitting";
     talkBtn.classList.add('talking');
@@ -312,7 +335,9 @@ socket.on('offer', async (data) => {
     if (!isPoweredOn) return;
     const pc = createPeerConnection(data.caller);
     await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-    const answer = await pc.createAnswer();
+    const answer = await pc.createAnswer({
+        offerToReceiveAudio: true
+    });
     await pc.setLocalDescription(answer);
     socket.emit('answer', { answer, target: data.caller });
 });
