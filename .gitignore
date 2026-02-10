@@ -2,3 +2,10 @@ node_modules/
 android/
 walkie-talkie.apk
 .DS_Store
+
+*.apk
+*.pdf
+*.mp4
+verify_server.js
+WhatsApp*
+use-case-*.jpg
