@@ -232,24 +232,41 @@ function startGpsTracking() {
    LOGIN FLOW
    ============================================ */
 
+/* ============================================
+   LOGIN FLOW
+   ============================================ */
+
 accessCodeInput.addEventListener('input', (e) => {
     const value = e.target.value.trim();
-    loginBtn.disabled = value.length < 1;
+    logToScreen(`Input: ${value}`);
+    // loginBtn.disabled = value.length < 1; // Disabled for debugging
 });
 
 accessCodeInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter' && accessCodeInput.value.trim().length >= 1) {
+        logToScreen('Enter Key Pressed');
         authenticate();
     }
 });
 
-loginBtn.addEventListener('click', authenticate);
+// Explicit listener with logging
+loginBtn.addEventListener('click', (e) => {
+    logToScreen('Button Click Event Detected');
+    e.preventDefault(); // Prevent any form submission weirdness
+    authenticate();
+});
 
 const loginStatusText = document.getElementById('login-status-text');
 
 async function authenticate(autoCode = null) {
+    logToScreen('Authenticate Function Called');
     let code = autoCode || accessCodeInput.value.trim();
-    if (!code) return;
+    if (!code) {
+        logToScreen('Error: No code provided');
+        alert('Please enter a code');
+        return;
+    }
+    // ... rest of function
 
     // Normalize: Remove spaces and force uppercase
     code = code.replace(/\s+/g, '').toUpperCase();

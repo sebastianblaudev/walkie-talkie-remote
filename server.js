@@ -59,6 +59,9 @@ io.on('connection', (socket) => {
                 user: user
             });
 
+            // CRITICAL: Notify other peers in the room to initiate WebRTC
+            socket.to(code).emit('user-connected', socket.id);
+
             // Notify Admins
             io.to(`${code}-ADMIN`).emit('unit_status', {
                 id: socket.id,
