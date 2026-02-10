@@ -379,6 +379,7 @@ async function initializeSystem() {
 
         // Update UI
         isPoweredOn = true;
+        pttBtn.disabled = false; // Enable PTT Button
         statusText.innerText = 'STANDBY';
         statusText.classList.add('connected');
         connectionStatus.querySelector('.status-dot').classList.add('active');
