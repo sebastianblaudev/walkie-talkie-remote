@@ -1,5 +1,5 @@
 /* ============================================
-   VANT TACTICAL COMMS - DIAGNOSTIC v3.0
+   VANT TACTICAL COMMS - REINFORCED v4.0
    ============================================ */
 
 const peers = {};
@@ -20,7 +20,8 @@ const rtcConfig = {
             username: 'openrelayproject',
             password: 'openrelayproject'
         }
-    ]
+    ],
+    iceCandidatePoolSize: 10
 };
 
 function log(msg) {
@@ -29,17 +30,19 @@ function log(msg) {
         consoleDiv.innerText += `\n[${new Date().toLocaleTimeString()}] ${msg}`;
         consoleDiv.scrollTop = consoleDiv.scrollHeight;
     }
+    console.log("[VANT]", msg);
 }
 
 function updateCounter() {
     const el = document.getElementById('user-count');
     if (!el) return;
-    const count = Object.keys(peers).length + 1;
-    el.innerText = `${count} OPERATOR${count !== 1 ? 'S' : ''}`;
+    const connectedPeers = Object.values(peers).filter(pc => pc.connectionState === 'connected').length;
+    const totalPeers = Object.keys(peers).length;
 
-    // Status visual
+    el.innerText = `${totalPeers + 1} OPERATORS (${connectedPeers} ONLINE)`;
+
     const statusText = document.getElementById('status-text');
-    if (Object.keys(peers).length > 0) {
+    if (connectedPeers > 0) {
         statusText.innerText = 'SECURE LINK ACTIVE';
         statusText.style.color = '#6EE7B7';
     } else {
@@ -54,18 +57,14 @@ socket = io(serverUrl);
 async function setupAudio() {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+            audio: { echoCancellation: true, noiseSuppression: true }
         });
 
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-        // --- ANALIZADORES SEPARADOS ---
-        // 1. Recibido (Las ondas grandes)
         recvAnalyser = audioCtx.createAnalyser();
         recvAnalyser.fftSize = 64;
         dataArray = new Uint8Array(recvAnalyser.frequencyBinCount);
 
-        // 2. Local (Para saber si mi micro funciona)
         localAnalyser = audioCtx.createAnalyser();
         localAnalyser.fftSize = 32;
         localDataArray = new Uint8Array(localAnalyser.frequencyBinCount);
@@ -76,18 +75,16 @@ async function setupAudio() {
 
         source.connect(myGain);
         myGain.connect(destination);
-
-        // El micro local se conecta a su analizador propio
         source.connect(localAnalyser);
 
         myGain.gain.setValueAtTime(0, audioCtx.currentTime);
         localStream = destination.stream;
 
-        log("Hardware táctico listo.");
+        log("Hardware listo.");
         startVisualizer();
         return true;
     } catch (e) {
-        alert("ERROR DE PERMISOS: Micrófono no detectado.");
+        log("Error mic: " + e.message);
         return false;
     }
 }
@@ -99,109 +96,92 @@ function startVisualizer() {
 
     function draw() {
         requestAnimationFrame(draw);
-
-        // Dibujamos el fondo
         ctx.fillStyle = '#131314';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        // --- DIBUJAR ONDAS DE AUDIO RECIBIDO (PRINCIPAL) ---
-        recvAnalyser.getByteFrequencyData(dataArray);
-        const barWidth = (canvas.width / dataArray.length) * 2;
-        let x = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-            const h = (dataArray[i] / 255) * canvas.height;
-            ctx.fillStyle = '#6EE7B7'; // Verde neón para el otro
-            ctx.fillRect(x, canvas.height - h, barWidth - 2, h);
-            x += barWidth;
+        // Ondas recibidas
+        if (recvAnalyser) {
+            recvAnalyser.getByteFrequencyData(dataArray);
+            const barWidth = (canvas.width / dataArray.length) * 2;
+            let x = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                const h = (dataArray[i] / 255) * canvas.height;
+                ctx.fillStyle = '#6EE7B7';
+                ctx.fillRect(x, canvas.height - h, barWidth - 1, h);
+                x += barWidth;
+            }
         }
 
-        // --- DIBUJAR INDICADOR DE MI PROPIO MICRO (PEQUEÑO) ---
-        localAnalyser.getByteFrequencyData(localDataArray);
-        let localVol = 0;
-        localDataArray.forEach(v => localVol += v);
-        localVol = localVol / localDataArray.length;
-
-        ctx.fillStyle = localVol > 10 ? '#3b82f6' : '#1f2937'; // Azul si hablo
-        ctx.fillRect(5, 5, 10, 10); // Un pequeño cuadrito indicador
+        // Mi micro (punto azul arriba izq)
+        if (localAnalyser) {
+            localAnalyser.getByteFrequencyData(localDataArray);
+            let vol = 0; localDataArray.forEach(v => vol += v);
+            ctx.fillStyle = (vol / localDataArray.length) > 10 ? '#3b82f6' : '#1f2937';
+            ctx.fillRect(10, 10, 6, 6);
+        }
     }
     draw();
 }
 
-function getOrCreatePC(remoteId) {
+function createPC(remoteId) {
     if (peers[remoteId]) return peers[remoteId];
 
+    log("Creando enlace con " + remoteId);
     const pc = new RTCPeerConnection(rtcConfig);
     peers[remoteId] = pc;
 
     if (localStream) {
-        localStream.getTracks().forEach(track => pc.addTransceiver(track, { streams: [localStream] }));
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
     }
 
     pc.ontrack = (event) => {
-        log("¡SEÑAL ENTRANTE DETECTADA!");
-        const remoteStream = event.streams[0];
+        log("¡Audio de entrada detectable!");
+        const audio = new Audio();
+        audio.srcObject = event.streams[0];
+        audio.play().catch(() => { });
 
-        // 1. Salida de audio física
-        let audio = document.getElementById(`audio-${remoteId}`);
-        if (!audio) {
-            audio = document.createElement('audio');
-            audio.id = `audio-${remoteId}`;
-            audio.autoplay = true;
-            audio.playsInline = true;
-            document.body.appendChild(audio);
-        }
-        audio.srcObject = remoteStream;
-
-        // 2. Conectar al visualizador PRINCIPAL (ondas grandes)
-        if (audioCtx) {
-            const remoteSource = audioCtx.createMediaStreamSource(remoteStream);
-            remoteSource.connect(audioCtx.destination);
-            remoteSource.connect(recvAnalyser); // AHORA LAS ONDAS SÓLO SE MUEVEN CON EL OTRO
-        }
-
-        document.getElementById('ptt-ring').classList.add('active');
-        updateCounter();
+        const remoteSource = audioCtx.createMediaStreamSource(event.streams[0]);
+        remoteSource.connect(audioCtx.destination);
+        remoteSource.connect(recvAnalyser);
     };
 
-    pc.onicecandidate = (event) => {
-        if (event.candidate) {
-            socket.emit('signal', { to: remoteId, signal: { candidate: event.candidate } });
+    pc.onicecandidate = (e) => {
+        if (e.candidate) {
+            socket.emit('signal', { to: remoteId, signal: { candidate: e.candidate } });
         }
     };
 
     pc.onconnectionstatechange = () => {
-        log(`Link ${remoteId}: ${pc.connectionState}`);
-        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-            delete peers[remoteId];
-            document.getElementById(`audio-${remoteId}`)?.remove();
-            updateCounter();
-        }
+        log(`Unidad ${remoteId}: ${pc.connectionState}`);
+        updateCounter();
     };
 
     return pc;
 }
 
-// --- CONEXIÓN AL CANAL ---
-async function join() {
-    const code = document.getElementById('access-code').value.trim().toUpperCase();
-    if (!code) return;
-    if (await setupAudio()) {
-        socket.emit('join_mission', { code: code });
-    }
+// BOTÓN LOGIN
+const loginBtn = document.getElementById('login-btn');
+if (loginBtn) {
+    loginBtn.addEventListener('click', async () => {
+        const code = document.getElementById('access-code').value.trim().toUpperCase();
+        if (!code) return;
+        if (await setupAudio()) {
+            socket.emit('join_mission', { code });
+        }
+    });
 }
 
 socket.on('mission_joined', (data) => {
-    log("Canal ALPHA-FORCE: " + data.mission);
+    log("Conectado a misión: " + data.mission);
     document.getElementById('login-screen').classList.remove('active');
     document.getElementById('main-screen').classList.add('active');
     document.getElementById('channel-name').innerText = data.mission;
-    document.getElementById('ptt-btn').disabled = false;
 
     if (data.existingMembers) {
         data.existingMembers.forEach(async (id) => {
             log("Llamando a operador remoto...");
-            const pc = getOrCreatePC(id);
-            const offer = await pc.createOffer({ offerToReceiveAudio: true });
+            const pc = createPC(id);
+            const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
             socket.emit('signal', { to: id, signal: { sdp: pc.localDescription } });
         });
@@ -210,13 +190,13 @@ socket.on('mission_joined', (data) => {
 });
 
 socket.on('new_operator', (id) => {
-    log("Nueva unidad en el sector. Preparando enlace...");
-    getOrCreatePC(id);
+    log("Nueva unidad detectada.");
+    createPC(id);
     updateCounter();
 });
 
 socket.on('signal', async (data) => {
-    const pc = getOrCreatePC(data.from);
+    const pc = createPC(data.from);
     if (data.signal.sdp) {
         await pc.setRemoteDescription(new RTCSessionDescription(data.signal.sdp));
         if (data.signal.sdp.type === 'offer') {
@@ -227,41 +207,40 @@ socket.on('signal', async (data) => {
     } else if (data.signal.candidate) {
         await pc.addIceCandidate(new RTCIceCandidate(data.signal.candidate)).catch(() => { });
     }
+});
+
+socket.on('operator_left', (id) => {
+    if (peers[id]) { peers[id].close(); delete peers[id]; }
     updateCounter();
 });
 
-// --- PTT CONTROLS ---
+// PTT
 const pttBtn = document.getElementById('ptt-btn');
-
-async function pushToTalk() {
-    if (!myGain) return;
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
-
-    // Desbloqueo forzado de altavoces
-    document.querySelectorAll('audio').forEach(a => a.play().catch(() => { }));
-
-    myGain.gain.setTargetAtTime(1.2, audioCtx.currentTime, 0.05); // Boost de volumen
-    pttBtn.classList.add('active');
-    document.getElementById('status-text').innerText = 'HABLANDO...';
-    document.getElementById('status-text').style.color = '#ef4444';
-}
-
-function releaseToListen() {
-    if (!myGain) return;
-    myGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
-    pttBtn.classList.remove('active');
-    updateCounter();
-}
-
 if (pttBtn) {
-    pttBtn.addEventListener('mousedown', pushToTalk);
-    window.addEventListener('mouseup', releaseToListen);
-    pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); pushToTalk(); });
-    pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); releaseToListen(); });
-}
+    pttBtn.disabled = false;
+    function startPTT() {
+        if (!myGain) return;
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        myGain.gain.setValueAtTime(1.5, audioCtx.currentTime);
+        pttBtn.classList.add('active');
+        document.getElementById('status-text').innerText = 'TRANSMITIENDO...';
+        document.getElementById('status-text').style.color = '#ef4444';
+    }
 
-document.getElementById('login-btn').addEventListener('click', join);
+    function stopPTT() {
+        if (!myGain) return;
+        myGain.gain.setValueAtTime(0, audioCtx.currentTime);
+        pttBtn.classList.remove('active');
+        updateCounter();
+    }
+
+    pttBtn.addEventListener('mousedown', startPTT);
+    window.addEventListener('mouseup', stopPTT);
+    pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startPTT(); });
+    pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopPTT(); });
+}
 
 window.addEventListener('click', () => {
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+    document.querySelectorAll('audio').forEach(a => a.play().catch(() => { }));
 });

@@ -11,38 +11,34 @@ const io = new Server(server, {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// Base de datos temporal de misiones para que el cliente reciba un nombre
-const missions = {
-    'ALPHA1': 'ALPHA SQUAD',
-    'BRAVO2': 'BRAVO TEAM',
-    'HQ-TEST': 'COMMAND CENTER'
-};
+// RASTREO MANUAL DE SALAS
+const rooms = {};
 
 io.on('connection', (socket) => {
     console.log('>>> CONEXIÓN:', socket.id);
 
     socket.on('join_mission', (data) => {
-        const room = data.code.toUpperCase();
-        socket.join(room);
+        const roomName = data.code.toUpperCase();
+        if (!rooms[roomName]) rooms[roomName] = [];
 
-        const clients = Array.from(io.sockets.adapter.rooms.get(room) || []);
-        const others = clients.filter(id => id !== socket.id);
+        // Evitar duplicados
+        if (!rooms[roomName].includes(socket.id)) {
+            rooms[roomName].push(socket.id);
+        }
 
-        console.log(`[${room}] Unit ${socket.id} joined. Others: ${others.length}`);
+        socket.join(roomName);
+        console.log(`[${roomName}] Unidades ahora: ${rooms[roomName].length}`);
 
-        // ESTE ES EL MENSAJE QUE EL CLIENTE ESPERA PARA ENTRAR
+        // Avisar al que entra quiénes están YA ahí (limpiamos su ID de la lista)
+        const others = rooms[roomName].filter(id => id !== socket.id);
         socket.emit('mission_joined', {
             success: true,
-            mission: missions[room] || room,
+            mission: roomName,
             existingMembers: others
         });
 
-        // Avisar a los demás
-        socket.to(room).emit('new_operator', socket.id);
+        // Avisar a los que ya estaban que hay alguien nuevo
+        socket.to(roomName).emit('new_operator', socket.id);
     });
 
     socket.on('signal', (data) => {
@@ -55,9 +51,15 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
+        // Limpiar de todas las salas
+        for (const room in rooms) {
+            rooms[room] = rooms[room].filter(id => id !== socket.id);
+            if (rooms[room].length === 0) delete rooms[room];
+        }
         io.emit('operator_left', socket.id);
+        console.log('<<< DESCONEXIÓN:', socket.id);
     });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`SERVIDOR CORRECTO EN PUERTO ${PORT}`));
+server.listen(PORT, () => console.log(`SERVIDOR REFORZADO EN PUERTO ${PORT}`));
