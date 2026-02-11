@@ -1,9 +1,10 @@
 /* ============================================
-   VANT TACTICAL COMMS - ULTIMATE AUDIO FIX (v2.8)
+   VANT TACTICAL COMMS - DIAGNOSTIC v3.0
    ============================================ */
 
 const peers = {};
-let socket, localStream, audioCtx, myGain, analyser, dataArray;
+let socket, localStream, audioCtx, myGain, recvAnalyser, dataArray;
+let localAnalyser, localDataArray;
 
 const rtcConfig = {
     iceServers: [
@@ -28,7 +29,6 @@ function log(msg) {
         consoleDiv.innerText += `\n[${new Date().toLocaleTimeString()}] ${msg}`;
         consoleDiv.scrollTop = consoleDiv.scrollHeight;
     }
-    console.log("[VANT]", msg);
 }
 
 function updateCounter() {
@@ -37,15 +37,14 @@ function updateCounter() {
     const count = Object.keys(peers).length + 1;
     el.innerText = `${count} OPERATOR${count !== 1 ? 'S' : ''}`;
 
-    const status = document.getElementById('status-text');
+    // Status visual
+    const statusText = document.getElementById('status-text');
     if (Object.keys(peers).length > 0) {
-        el.style.color = '#6EE7B7';
-        status.innerText = 'SECURE LINK';
-        status.style.color = '#6EE7B7';
+        statusText.innerText = 'SECURE LINK ACTIVE';
+        statusText.style.color = '#6EE7B7';
     } else {
-        el.style.color = '';
-        status.innerText = 'CONNECTED';
-        status.style.color = '';
+        statusText.innerText = 'WAITING FOR SQUAD...';
+        statusText.style.color = '#f59e0b';
     }
 }
 
@@ -55,19 +54,21 @@ socket = io(serverUrl);
 async function setupAudio() {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            }
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
         });
 
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-        // Analizador único para el visualizador
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 64;
-        dataArray = new Uint8Array(analyser.frequencyBinCount);
+        // --- ANALIZADORES SEPARADOS ---
+        // 1. Recibido (Las ondas grandes)
+        recvAnalyser = audioCtx.createAnalyser();
+        recvAnalyser.fftSize = 64;
+        dataArray = new Uint8Array(recvAnalyser.frequencyBinCount);
+
+        // 2. Local (Para saber si mi micro funciona)
+        localAnalyser = audioCtx.createAnalyser();
+        localAnalyser.fftSize = 32;
+        localDataArray = new Uint8Array(localAnalyser.frequencyBinCount);
 
         const source = audioCtx.createMediaStreamSource(stream);
         myGain = audioCtx.createGain();
@@ -76,19 +77,17 @@ async function setupAudio() {
         source.connect(myGain);
         myGain.connect(destination);
 
-        // El visualizador muestra mi propia voz
-        source.connect(analyser);
+        // El micro local se conecta a su analizador propio
+        source.connect(localAnalyser);
 
         myGain.gain.setValueAtTime(0, audioCtx.currentTime);
-
-        // IMPORTANTE: Extraemos el track de audio real
         localStream = destination.stream;
-        log("Hardware de audio inicializado.");
+
+        log("Hardware táctico listo.");
         startVisualizer();
         return true;
     } catch (e) {
-        log("Error de hardware: " + e.message);
-        alert("ERROR: Acceso al micrófono denegado.");
+        alert("ERROR DE PERMISOS: Micrófono no detectado.");
         return false;
     }
 }
@@ -100,21 +99,30 @@ function startVisualizer() {
 
     function draw() {
         requestAnimationFrame(draw);
-        if (!analyser) return;
-        analyser.getByteFrequencyData(dataArray);
 
+        // Dibujamos el fondo
         ctx.fillStyle = '#131314';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        const barWidth = (canvas.width / dataArray.length) * 2.5;
+        // --- DIBUJAR ONDAS DE AUDIO RECIBIDO (PRINCIPAL) ---
+        recvAnalyser.getByteFrequencyData(dataArray);
+        const barWidth = (canvas.width / dataArray.length) * 2;
         let x = 0;
-
         for (let i = 0; i < dataArray.length; i++) {
-            const barHeight = (dataArray[i] / 255) * canvas.height;
-            ctx.fillStyle = '#6EE7B7';
-            ctx.fillRect(x, canvas.height - barHeight, barWidth - 2, barHeight);
+            const h = (dataArray[i] / 255) * canvas.height;
+            ctx.fillStyle = '#6EE7B7'; // Verde neón para el otro
+            ctx.fillRect(x, canvas.height - h, barWidth - 2, h);
             x += barWidth;
         }
+
+        // --- DIBUJAR INDICADOR DE MI PROPIO MICRO (PEQUEÑO) ---
+        localAnalyser.getByteFrequencyData(localDataArray);
+        let localVol = 0;
+        localDataArray.forEach(v => localVol += v);
+        localVol = localVol / localDataArray.length;
+
+        ctx.fillStyle = localVol > 10 ? '#3b82f6' : '#1f2937'; // Azul si hablo
+        ctx.fillRect(5, 5, 10, 10); // Un pequeño cuadrito indicador
     }
     draw();
 }
@@ -126,17 +134,14 @@ function getOrCreatePC(remoteId) {
     peers[remoteId] = pc;
 
     if (localStream) {
-        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+        localStream.getTracks().forEach(track => pc.addTransceiver(track, { streams: [localStream] }));
     }
 
-    // CUANDO LLEGA AUDIO DEL OTRO
     pc.ontrack = (event) => {
-        log("RECIBIENDO SEÑAL DE VOZ...");
+        log("¡SEÑAL ENTRANTE DETECTADA!");
+        const remoteStream = event.streams[0];
 
-        // CREAMOS UN STREAM PARA ESTE TRACK
-        const remoteStream = new MediaStream([event.track]);
-
-        // FORMA 1: El elemento Audio (para asegurar salida en móviles)
+        // 1. Salida de audio física
         let audio = document.getElementById(`audio-${remoteId}`);
         if (!audio) {
             audio = document.createElement('audio');
@@ -147,12 +152,11 @@ function getOrCreatePC(remoteId) {
         }
         audio.srcObject = remoteStream;
 
-        // FORMA 2: Inyectar directamente al motor de audio del sistema
+        // 2. Conectar al visualizador PRINCIPAL (ondas grandes)
         if (audioCtx) {
             const remoteSource = audioCtx.createMediaStreamSource(remoteStream);
             remoteSource.connect(audioCtx.destination);
-            // También lo conectamos al visualizador para ver si llega sonido
-            remoteSource.connect(analyser);
+            remoteSource.connect(recvAnalyser); // AHORA LAS ONDAS SÓLO SE MUEVEN CON EL OTRO
         }
 
         document.getElementById('ptt-ring').classList.add('active');
@@ -166,7 +170,7 @@ function getOrCreatePC(remoteId) {
     };
 
     pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') log("CANAL SEGURO ESTABLECIDO");
+        log(`Link ${remoteId}: ${pc.connectionState}`);
         if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
             delete peers[remoteId];
             document.getElementById(`audio-${remoteId}`)?.remove();
@@ -177,6 +181,7 @@ function getOrCreatePC(remoteId) {
     return pc;
 }
 
+// --- CONEXIÓN AL CANAL ---
 async function join() {
     const code = document.getElementById('access-code').value.trim().toUpperCase();
     if (!code) return;
@@ -186,7 +191,7 @@ async function join() {
 }
 
 socket.on('mission_joined', (data) => {
-    log("Uplink activo: " + data.mission);
+    log("Canal ALPHA-FORCE: " + data.mission);
     document.getElementById('login-screen').classList.remove('active');
     document.getElementById('main-screen').classList.add('active');
     document.getElementById('channel-name').innerText = data.mission;
@@ -194,8 +199,9 @@ socket.on('mission_joined', (data) => {
 
     if (data.existingMembers) {
         data.existingMembers.forEach(async (id) => {
+            log("Llamando a operador remoto...");
             const pc = getOrCreatePC(id);
-            const offer = await pc.createOffer();
+            const offer = await pc.createOffer({ offerToReceiveAudio: true });
             await pc.setLocalDescription(offer);
             socket.emit('signal', { to: id, signal: { sdp: pc.localDescription } });
         });
@@ -204,7 +210,7 @@ socket.on('mission_joined', (data) => {
 });
 
 socket.on('new_operator', (id) => {
-    log("Nueva unidad detectada.");
+    log("Nueva unidad en el sector. Preparando enlace...");
     getOrCreatePC(id);
     updateCounter();
 });
@@ -219,46 +225,39 @@ socket.on('signal', async (data) => {
             socket.emit('signal', { to: data.from, signal: { sdp: pc.localDescription } });
         }
     } else if (data.signal.candidate) {
-        await pc.addIceCandidate(new RTCIceCandidate(data.signal.candidate)).catch(e => { });
+        await pc.addIceCandidate(new RTCIceCandidate(data.signal.candidate)).catch(() => { });
     }
     updateCounter();
 });
 
-socket.on('operator_left', (id) => {
-    if (peers[id]) { peers[id].close(); delete peers[id]; }
-    document.getElementById(`audio-${id}`)?.remove();
-    updateCounter();
-});
-
-// PTT CONTROLS
+// --- PTT CONTROLS ---
 const pttBtn = document.getElementById('ptt-btn');
 
-async function startSpeaking() {
+async function pushToTalk() {
     if (!myGain) return;
     if (audioCtx.state === 'suspended') await audioCtx.resume();
 
-    // Desbloqueo agresivo de altavoces
+    // Desbloqueo forzado de altavoces
     document.querySelectorAll('audio').forEach(a => a.play().catch(() => { }));
 
-    myGain.gain.setValueAtTime(1, audioCtx.currentTime);
+    myGain.gain.setTargetAtTime(1.2, audioCtx.currentTime, 0.05); // Boost de volumen
     pttBtn.classList.add('active');
-    document.getElementById('status-text').innerText = 'TRANSMITIENDO';
-    document.getElementById('status-text').classList.add('transmitting');
+    document.getElementById('status-text').innerText = 'HABLANDO...';
+    document.getElementById('status-text').style.color = '#ef4444';
 }
 
-function stopSpeaking() {
+function releaseToListen() {
     if (!myGain) return;
-    myGain.gain.setValueAtTime(0, audioCtx.currentTime);
+    myGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
     pttBtn.classList.remove('active');
-    document.getElementById('status-text').classList.remove('transmitting');
     updateCounter();
 }
 
 if (pttBtn) {
-    pttBtn.addEventListener('mousedown', startSpeaking);
-    window.addEventListener('mouseup', stopSpeaking);
-    pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startSpeaking(); });
-    pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopSpeaking(); });
+    pttBtn.addEventListener('mousedown', pushToTalk);
+    window.addEventListener('mouseup', releaseToListen);
+    pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); pushToTalk(); });
+    pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); releaseToListen(); });
 }
 
 document.getElementById('login-btn').addEventListener('click', join);
