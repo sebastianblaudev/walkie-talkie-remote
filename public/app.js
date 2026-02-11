@@ -1,10 +1,10 @@
 /* ============================================
-   VANT TACTICAL COMMS - REINFORCED v5.0
+   VANT TACTICAL COMMS - REINFORCED v5.5
    ============================================ */
 
 const peers = {};
 let socket, localStream, audioCtx, myGain, recvAnalyser, dataArray;
-let localAnalyser, localDataArray;
+let localAnalyser, localDataArray, remoteGain;
 
 const rtcConfig = {
     iceServers: [
@@ -37,9 +37,8 @@ function updateCounter() {
     const el = document.getElementById('user-count');
     if (!el) return;
     const connectedPeers = Object.values(peers).filter(pc => pc.connectionState === 'connected').length;
-    const totalPeers = Object.keys(peers).length;
 
-    el.innerText = `${totalPeers + 1} OPERATORS (${connectedPeers} ONLINE)`;
+    el.innerText = `${Object.keys(peers).length + 1} OPERATORS (${connectedPeers} ONLINE)`;
 
     const statusText = document.getElementById('status-text');
     if (connectedPeers > 0) {
@@ -56,7 +55,7 @@ socket = io(serverUrl);
 
 async function setupAudio() {
     try {
-        log("Solicitando acceso al micrófono...");
+        log("Iniciando hardware de audio...");
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 echoCancellation: true,
@@ -67,11 +66,7 @@ async function setupAudio() {
 
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-        // Resume context on play
-        if (audioCtx.state === 'suspended') {
-            await audioCtx.resume();
-        }
-
+        // Analizadores
         recvAnalyser = audioCtx.createAnalyser();
         recvAnalyser.fftSize = 64;
         dataArray = new Uint8Array(recvAnalyser.frequencyBinCount);
@@ -79,6 +74,11 @@ async function setupAudio() {
         localAnalyser = audioCtx.createAnalyser();
         localAnalyser.fftSize = 32;
         localDataArray = new Uint8Array(localAnalyser.frequencyBinCount);
+
+        // Nodo de Ganancia Remota (Para subir el volumen de lo que recibimos)
+        remoteGain = audioCtx.createGain();
+        remoteGain.gain.value = 1.5; // +50% de volumen para claridad
+        remoteGain.connect(audioCtx.destination);
 
         const source = audioCtx.createMediaStreamSource(stream);
         myGain = audioCtx.createGain();
@@ -91,12 +91,11 @@ async function setupAudio() {
         myGain.gain.setValueAtTime(0, audioCtx.currentTime);
         localStream = destination.stream;
 
-        log("Sistemas de audio activados.");
+        log("Sistemas listos.");
         startVisualizer();
         return true;
     } catch (e) {
-        log("ERROR FATAL MIC: " + e.message);
-        alert("ERROR: El sistema requiere permisos de micrófono.");
+        log("Error mic: " + e.message);
         return false;
     }
 }
@@ -111,9 +110,9 @@ function startVisualizer() {
         ctx.fillStyle = '#131314';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        // Ondas de audio entrante
         if (recvAnalyser) {
             recvAnalyser.getByteFrequencyData(dataArray);
+            let sum = 0; dataArray.forEach(v => sum += v);
             const barWidth = (canvas.width / dataArray.length) * 2;
             let x = 0;
             for (let i = 0; i < dataArray.length; i++) {
@@ -124,12 +123,11 @@ function startVisualizer() {
             }
         }
 
-        // Mi propio micro (punto de control)
         if (localAnalyser) {
             localAnalyser.getByteFrequencyData(localDataArray);
             let vol = 0; localDataArray.forEach(v => vol += v);
             ctx.fillStyle = (vol / localDataArray.length) > 10 ? '#3b82f6' : '#1f2937';
-            ctx.fillRect(10, 10, 6, 6);
+            ctx.fillRect(5, 5, 4, 4);
         }
     }
     draw();
@@ -138,7 +136,7 @@ function startVisualizer() {
 function createPC(remoteId) {
     if (peers[remoteId]) return peers[remoteId];
 
-    log("Estableciendo enlace con operador: " + remoteId);
+    log("Enlazando unidad: " + remoteId);
     const pc = new RTCPeerConnection(rtcConfig);
     peers[remoteId] = pc;
 
@@ -147,14 +145,15 @@ function createPC(remoteId) {
     }
 
     pc.ontrack = (event) => {
-        log("¡SEÑAL ENTRANTE DE: " + remoteId + "!");
+        log("¡Audio remoto detectado!");
 
-        // Crear elemento de audio persistente en el DOM
         let audio = document.getElementById(`audio-${remoteId}`);
         if (!audio) {
             audio = document.createElement('audio');
             audio.id = `audio-${remoteId}`;
-            audio.style.display = 'none';
+            // Mantenerlo en el DOM pero no molesto
+            audio.style.position = 'fixed';
+            audio.style.top = '-100px';
             document.body.appendChild(audio);
         }
 
@@ -162,34 +161,19 @@ function createPC(remoteId) {
         audio.autoplay = true;
         audio.playsInline = true;
         audio.muted = false;
-        audio.volume = 1.0;
+        audio.play().catch(() => log("Auto-reproducción bloqueada."));
 
-        const playPromise = audio.play();
-        if (playPromise !== undefined) {
-            playPromise.catch(e => {
-                log("Reproducción bloqueada. Haga clic en la pantalla.");
-            });
-        }
-
-        // Conexión al analizador para ver las ondas
         if (audioCtx) {
             try {
                 const remoteSource = audioCtx.createMediaStreamSource(event.streams[0]);
-                // NO conectamos a destination aquí para evitar duplicar sonido si el <audio> ya suena,
-                // pero sí lo conectamos al analizador para ver las ondas.
-                // En móviles, el <audio> suele ser más fiable.
+                remoteSource.connect(remoteGain);
                 remoteSource.connect(recvAnalyser);
             } catch (err) {
-                log("Error conectando analizador remoto");
+                log("Error en ruteo de audio");
             }
         }
 
         document.getElementById('ptt-ring').classList.add('active');
-        setTimeout(() => {
-            if (!document.getElementById('ptt-btn').classList.contains('active')) {
-                document.getElementById('ptt-ring').classList.remove('active');
-            }
-        }, 1000);
         updateCounter();
     };
 
@@ -200,32 +184,31 @@ function createPC(remoteId) {
     };
 
     pc.onconnectionstatechange = () => {
-        log(`Link Status [${remoteId}]: ${pc.connectionState}`);
+        log(`Estado [${remoteId}]: ${pc.connectionState}`);
         updateCounter();
     };
 
     return pc;
 }
 
-// LOGIN
+// UI EVENTS
 document.getElementById('login-btn').addEventListener('click', async () => {
     const code = document.getElementById('access-code').value.trim().toUpperCase();
     if (!code) return;
     if (await setupAudio()) {
         socket.emit('join_mission', { code });
-        log("Petición de misión enviada.");
     }
 });
 
 socket.on('mission_joined', (data) => {
-    log("CONECTADO A: " + data.mission);
+    log("UPLINK OK: " + data.mission);
     document.getElementById('login-screen').classList.remove('active');
     document.getElementById('main-screen').classList.add('active');
     document.getElementById('channel-name').innerText = data.mission;
 
     if (data.existingMembers) {
         data.existingMembers.forEach(async (id) => {
-            log("Sincronizando con unidad...");
+            log("Sincronizando...");
             const pc = createPC(id);
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
@@ -236,7 +219,7 @@ socket.on('mission_joined', (data) => {
 });
 
 socket.on('new_operator', (id) => {
-    log("Nueva unidad detectada.");
+    log("Unidad nueva en red.");
     createPC(id);
     updateCounter();
 });
@@ -264,26 +247,20 @@ socket.on('operator_left', (id) => {
 
 // PTT
 const pttBtn = document.getElementById('ptt-btn');
-pttBtn.disabled = false;
-
 async function startPTT() {
     if (!myGain) return;
     if (audioCtx.state === 'suspended') await audioCtx.resume();
 
-    // Forzar reproducción de todos los audios (importante para Safari/Móviles)
-    document.querySelectorAll('audio').forEach(a => {
-        a.play().catch(() => { });
-    });
+    document.querySelectorAll('audio').forEach(a => a.play().catch(() => { }));
 
-    myGain.gain.setValueAtTime(1.0, audioCtx.currentTime);
+    myGain.gain.setTargetAtTime(1.0, audioCtx.currentTime, 0.05);
     pttBtn.classList.add('active');
-    document.getElementById('status-text').innerText = 'TRANSMITIENDO...';
-    document.getElementById('status-text').style.color = '#ef4444';
+    document.getElementById('status-text').innerText = 'EN APOYO (MIC ON)';
 }
 
 function stopPTT() {
     if (!myGain) return;
-    myGain.gain.setValueAtTime(0, audioCtx.currentTime);
+    myGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
     pttBtn.classList.remove('active');
     updateCounter();
 }
@@ -292,11 +269,6 @@ pttBtn.addEventListener('mousedown', startPTT);
 window.addEventListener('mouseup', stopPTT);
 pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startPTT(); });
 pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopPTT(); });
-
-// Limpieza al cerrar
-window.addEventListener('beforeunload', () => {
-    socket.disconnect();
-});
 
 window.addEventListener('click', () => {
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
