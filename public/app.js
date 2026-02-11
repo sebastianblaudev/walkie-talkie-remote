@@ -1,14 +1,10 @@
 /* ============================================
-   VANT TACTICAL COMMS - CORE REBUILD v2.1 (TURN ENABLED)
+   VANT TACTICAL COMMS - CORE REBUILD v2.5
    ============================================ */
 
 const peers = {};
-let socket;
-let localStream;
-let audioCtx;
-let myGain;
+let socket, localStream, audioCtx, myGain, analyser, dataArray;
 
-// Servidores STUN y TURN para máxima compatibilidad (Nieve/Firewalls/Móviles)
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -41,15 +37,15 @@ function updateCounter() {
     const count = Object.keys(peers).length + 1;
     el.innerText = `${count} OPERATOR${count !== 1 ? 'S' : ''}`;
 
-    // Cambiar color si hay conexión técnica real
+    const status = document.getElementById('status-text');
     if (Object.keys(peers).length > 0) {
         el.style.color = '#6EE7B7';
-        document.getElementById('status-text').innerText = 'SECURE LINK';
-        document.getElementById('status-text').style.color = '#6EE7B7';
+        status.innerText = 'SECURE LINK';
+        status.style.color = '#6EE7B7';
     } else {
         el.style.color = '';
-        document.getElementById('status-text').innerText = 'STANDBY';
-        document.getElementById('status-text').style.color = '';
+        status.innerText = 'CONNECTED';
+        status.style.color = '';
     }
 }
 
@@ -60,28 +56,63 @@ async function setupAudio() {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        // Analizador para el visualizador
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 64;
+        dataArray = new Uint8Array(analyser.frequencyBinCount);
+
         const source = audioCtx.createMediaStreamSource(stream);
         myGain = audioCtx.createGain();
         const destination = audioCtx.createMediaStreamDestination();
 
         source.connect(myGain);
         myGain.connect(destination);
+
+        // El visualizador se conecta ANTES del gain para que siempre veas tu propia voz
+        source.connect(analyser);
+
         myGain.gain.setValueAtTime(0, audioCtx.currentTime);
 
         localStream = destination.stream;
-        log("Dispositivo de audio listo.");
+        log("Dispositivo táctico preparado.");
+        startVisualizer();
         return true;
     } catch (e) {
-        log("Error de audio: " + e.message);
-        alert("ERROR: Permiso de micrófono denegado.");
+        log("Error de hardware: " + e.message);
+        alert("ERROR: Acceso al micrófono denegado.");
         return false;
     }
+}
+
+function startVisualizer() {
+    const canvas = document.getElementById('visualizer');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    function draw() {
+        requestAnimationFrame(draw);
+        analyser.getByteFrequencyData(dataArray);
+
+        ctx.fillStyle = '#131314';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const barWidth = (canvas.width / dataArray.length) * 2.5;
+        let x = 0;
+
+        for (let i = 0; i < dataArray.length; i++) {
+            const barHeight = (dataArray[i] / 255) * canvas.height;
+            ctx.fillStyle = '#6EE7B7';
+            ctx.fillRect(x, canvas.height - barHeight, barWidth - 2, barHeight);
+            x += barWidth;
+        }
+    }
+    draw();
 }
 
 function getOrCreatePC(remoteId) {
     if (peers[remoteId]) return peers[remoteId];
 
-    log("Estableciendo puente con " + remoteId);
     const pc = new RTCPeerConnection(rtcConfig);
     peers[remoteId] = pc;
 
@@ -90,7 +121,7 @@ function getOrCreatePC(remoteId) {
     }
 
     pc.ontrack = (event) => {
-        log("¡CANAL DE VOZ ABIERTO con " + remoteId + "!");
+        log("Recibiendo audio de " + remoteId);
         let audio = document.getElementById(`audio-${remoteId}`);
         if (!audio) {
             audio = document.createElement('audio');
@@ -100,6 +131,8 @@ function getOrCreatePC(remoteId) {
             document.body.appendChild(audio);
         }
         audio.srcObject = event.streams[0];
+        audio.play().catch(() => log("Esperando acción del usuario para audio."));
+
         document.getElementById('ptt-ring').classList.add('active');
         updateCounter();
     };
@@ -111,16 +144,12 @@ function getOrCreatePC(remoteId) {
     };
 
     pc.onconnectionstatechange = () => {
-        log(`Estado de unidad ${remoteId}: ${pc.connectionState}`);
-        if (pc.connectionState === 'connected') {
-            log("CONEXIÓN CIFRADA ESTABLECIDA");
-        }
+        if (pc.connectionState === 'connected') log("CIFRADO ACTIVO CON " + remoteId);
         if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
             delete peers[remoteId];
             document.getElementById(`audio-${remoteId}`)?.remove();
             updateCounter();
         }
-        updateCounter();
     };
 
     return pc;
@@ -129,41 +158,37 @@ function getOrCreatePC(remoteId) {
 async function join() {
     const code = document.getElementById('access-code').value.trim().toUpperCase();
     if (!code) return;
-    log("Iniciando autenticación...");
     if (await setupAudio()) {
         socket.emit('join_mission', { code: code });
     }
 }
 
 socket.on('mission_joined', (data) => {
-    log("Uplink estabilizado: " + data.mission);
+    log("Canal asegurado: " + data.mission);
     document.getElementById('login-screen').classList.remove('active');
     document.getElementById('main-screen').classList.add('active');
     document.getElementById('channel-name').innerText = data.mission;
+    document.getElementById('ptt-btn').disabled = false;
 
-    if (data.existingMembers && data.existingMembers.length > 0) {
-        log("Detectadas unidades activas. Llamando...");
+    if (data.existingMembers) {
         data.existingMembers.forEach(async (id) => {
             const pc = getOrCreatePC(id);
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
             socket.emit('signal', { to: id, signal: { sdp: pc.localDescription } });
         });
-    } else {
-        log("Esperando otras unidades en el canal...");
     }
     updateCounter();
 });
 
 socket.on('new_operator', (id) => {
-    log("Nueva unidad detectada en el sector.");
+    log("Nueva unidad en red.");
     getOrCreatePC(id);
     updateCounter();
 });
 
 socket.on('signal', async (data) => {
     const pc = getOrCreatePC(data.from);
-
     if (data.signal.sdp) {
         await pc.setRemoteDescription(new RTCSessionDescription(data.signal.sdp));
         if (data.signal.sdp.type === 'offer') {
@@ -178,37 +203,33 @@ socket.on('signal', async (data) => {
 });
 
 socket.on('operator_left', (id) => {
-    if (peers[id]) {
-        peers[id].close();
-        delete peers[id];
-    }
+    if (peers[id]) { peers[id].close(); delete peers[id]; }
     document.getElementById(`audio-${id}`)?.remove();
     updateCounter();
 });
 
+// PTT CONTROLS
 const pttBtn = document.getElementById('ptt-btn');
-const statusText = document.getElementById('status-text');
 
-function startSpeaking() {
+async function startSpeaking() {
     if (!myGain) return;
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-    myGain.gain.setTargetAtTime(1, audioCtx.currentTime, 0.05);
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+    // Forzamos reproducción en todos los elementos audio al tocar el PTT (desbloqueo de sonido)
+    document.querySelectorAll('audio').forEach(a => a.play().catch(() => { text: 'Log: Forzando audio' }));
+
+    myGain.gain.setValueAtTime(1, audioCtx.currentTime);
     pttBtn.classList.add('active');
-    statusText.innerText = 'TRANSMITIENDO';
-    statusText.classList.add('transmitting');
-    log("HABLANDO...");
+    document.getElementById('status-text').innerText = 'TRANSMITIENDO';
+    document.getElementById('status-text').classList.add('transmitting');
 }
 
 function stopSpeaking() {
     if (!myGain) return;
-    myGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.05);
+    myGain.gain.setValueAtTime(0, audioCtx.currentTime);
     pttBtn.classList.remove('active');
-    if (Object.keys(peers).length > 0) {
-        statusText.innerText = 'SECURE LINK';
-    } else {
-        statusText.innerText = 'CONECTADO';
-    }
-    statusText.classList.remove('transmitting');
+    updateCounter(); // Restaura el estado visual (STANDBY o SECURE LINK)
+    document.getElementById('status-text').classList.remove('transmitting');
 }
 
 if (pttBtn) {
@@ -218,10 +239,8 @@ if (pttBtn) {
     pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopSpeaking(); });
 }
 
-const loginBtn = document.getElementById('login-btn');
-if (loginBtn) loginBtn.addEventListener('click', join);
+document.getElementById('login-btn').addEventListener('click', join);
 
 window.addEventListener('click', () => {
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-    document.querySelectorAll('audio').forEach(a => a.play().catch(e => { }));
 });
