@@ -470,18 +470,20 @@ function switchChannel(newRoomId, name) {
    MANUAL CHANNEL ENTRY
    ============================================ */
 
-channelCodeInput.addEventListener('input', (e) => {
-    const value = e.target.value.trim();
-    joinChannelBtn.disabled = value.length < 1;
-});
+if (channelCodeInput && joinChannelBtn) {
+    channelCodeInput.addEventListener('input', (e) => {
+        const value = e.target.value.trim();
+        joinChannelBtn.disabled = value.length < 1;
+    });
 
-channelCodeInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter' && channelCodeInput.value.trim().length >= 1) {
-        toggleChannel();
-    }
-});
+    channelCodeInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && channelCodeInput.value.trim().length >= 1) {
+            toggleChannel();
+        }
+    });
 
-joinChannelBtn.addEventListener('click', toggleChannel);
+    joinChannelBtn.addEventListener('click', toggleChannel);
+}
 
 function toggleChannel() {
     if (!isPoweredOn) return;
