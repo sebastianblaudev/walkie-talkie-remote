@@ -1,4 +1,24 @@
-const socket = io();
+/* ============================================
+   SERVER CONNECTION (APK SUPPORT)
+   ============================================ */
+
+const getServerUrl = () => {
+    // Check if running in Capacitor (Native App) or via file://
+    const isCapacitor = window.Capacitor !== undefined;
+    const isFileProtocol = window.location.protocol === 'file:';
+
+    if (isCapacitor || isFileProtocol) {
+        return 'https://walkie-talkie-remote.onrender.com';
+    }
+
+    const isLocal = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    return isLocal ? window.location.origin : 'https://walkie-talkie-remote.onrender.com';
+};
+
+const socket = io(getServerUrl(), {
+    reconnection: true,
+    reconnectionAttempts: 5
+});
 
 // State
 let missions = [];

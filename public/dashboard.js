@@ -2,7 +2,27 @@
    VANT COMMAND CENTER - DASHBOARD LOGIC
    ============================================ */
 
-const socket = io();
+/* ============================================
+   SERVER CONNECTION (APK SUPPORT)
+   ============================================ */
+
+const getServerUrl = () => {
+    // Check if running in Capacitor (Native App) or via file://
+    const isCapacitor = window.Capacitor !== undefined;
+    const isFileProtocol = window.location.protocol === 'file:';
+
+    if (isCapacitor || isFileProtocol) {
+        return 'https://walkie-talkie-remote.onrender.com';
+    }
+
+    const isLocal = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    return isLocal ? window.location.origin : 'https://walkie-talkie-remote.onrender.com';
+};
+
+const socket = io(getServerUrl(), {
+    reconnection: true,
+    reconnectionAttempts: 5
+});
 let missionCode = null;
 let currentLang = localStorage.getItem('vant_dashboard_lang') || 'en';
 
@@ -400,12 +420,19 @@ function updateUnitList() {
     units.forEach(([id, unit]) => {
         const div = document.createElement('div');
         div.className = 'unit-card';
+        const speed = unit.location ? (unit.location.speed || 0) * 3.6 : 0;
+        const moveStatus = speed > 1 ? 'MOVING' : 'IDLE';
+        const statusColor = speed > 1 ? '#10B981' : '#6B7280';
+
         div.innerHTML = `
             <div class="unit-info">
                 <h4>${unit.user}</h4>
                 <div class="unit-status online">
                     <i class="fas fa-signal"></i> 
                     ${unit.location ? `${unit.location.lat.toFixed(4)}, ${unit.location.lng.toFixed(4)}` : t.status_no_signal}
+                </div>
+                <div style="font-size: 10px; color: ${statusColor}; margin-top: 4px; font-weight: 700;">
+                    ${moveStatus} • ${speed.toFixed(1)} KM/H
                 </div>
             </div>
             <div class="unit-actions">

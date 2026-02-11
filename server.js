@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -16,12 +17,39 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Store active sockets in rooms
-// B2B Data Stores (In-Memory for MVP)
-const missions = {
-    'ALPHA1': { name: 'Alpha Squad', client: 'Security Corp', active: true },
-    'BRAVO2': { name: 'Bravo Team', client: 'Logistics Inc', active: true },
-    'HQ-TEST': { name: 'Command Center', client: 'VANT Internal', active: true }
-};
+// B2B Data Stores (Persistent JSON)
+const DATA_FILE = path.join(__dirname, 'vant_data.json');
+let missions = {};
+
+// Load Data
+if (fs.existsSync(DATA_FILE)) {
+    try {
+        missions = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+        console.log('Loaded missions from disk');
+    } catch (e) {
+        console.error('Failed to load data, using defaults:', e);
+        missions = getDefaultMissions();
+    }
+} else {
+    missions = getDefaultMissions();
+    saveData();
+}
+
+function getDefaultMissions() {
+    return {
+        'ALPHA1': { name: 'Alpha Squad', client: 'Security Corp', active: true },
+        'BRAVO2': { name: 'Bravo Team', client: 'Logistics Inc', active: true },
+        'HQ-TEST': { name: 'Command Center', client: 'VANT Internal', active: true }
+    };
+}
+
+function saveData() {
+    try {
+        fs.writeFileSync(DATA_FILE, JSON.stringify(missions, null, 2));
+    } catch (e) {
+        console.error('Error saving data:', e);
+    }
+}
 
 const activeSessions = {}; // socketId -> { code, user, role, location }
 
@@ -141,6 +169,7 @@ io.on('connection', (socket) => {
                 channels: data.channels || [],
                 active: true
             };
+            saveData();
             console.log(`[ADMIN] Created new mission: ${data.code}`);
             socket.emit('mission_created', { success: true });
 
