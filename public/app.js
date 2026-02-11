@@ -1,5 +1,5 @@
 /* ============================================
-   VANT TACTICAL COMMS - CORE REBUILD v2.5
+   VANT TACTICAL COMMS - ULTIMATE AUDIO FIX (v2.8)
    ============================================ */
 
 const peers = {};
@@ -54,10 +54,17 @@ socket = io(serverUrl);
 
 async function setupAudio() {
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        });
+
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-        // Analizador para el visualizador
+        // Analizador único para el visualizador
         analyser = audioCtx.createAnalyser();
         analyser.fftSize = 64;
         dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -69,13 +76,14 @@ async function setupAudio() {
         source.connect(myGain);
         myGain.connect(destination);
 
-        // El visualizador se conecta ANTES del gain para que siempre veas tu propia voz
+        // El visualizador muestra mi propia voz
         source.connect(analyser);
 
         myGain.gain.setValueAtTime(0, audioCtx.currentTime);
 
+        // IMPORTANTE: Extraemos el track de audio real
         localStream = destination.stream;
-        log("Dispositivo táctico preparado.");
+        log("Hardware de audio inicializado.");
         startVisualizer();
         return true;
     } catch (e) {
@@ -92,6 +100,7 @@ function startVisualizer() {
 
     function draw() {
         requestAnimationFrame(draw);
+        if (!analyser) return;
         analyser.getByteFrequencyData(dataArray);
 
         ctx.fillStyle = '#131314';
@@ -120,8 +129,14 @@ function getOrCreatePC(remoteId) {
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
     }
 
+    // CUANDO LLEGA AUDIO DEL OTRO
     pc.ontrack = (event) => {
-        log("Recibiendo audio de " + remoteId);
+        log("RECIBIENDO SEÑAL DE VOZ...");
+
+        // CREAMOS UN STREAM PARA ESTE TRACK
+        const remoteStream = new MediaStream([event.track]);
+
+        // FORMA 1: El elemento Audio (para asegurar salida en móviles)
         let audio = document.getElementById(`audio-${remoteId}`);
         if (!audio) {
             audio = document.createElement('audio');
@@ -130,8 +145,15 @@ function getOrCreatePC(remoteId) {
             audio.playsInline = true;
             document.body.appendChild(audio);
         }
-        audio.srcObject = event.streams[0];
-        audio.play().catch(() => log("Esperando acción del usuario para audio."));
+        audio.srcObject = remoteStream;
+
+        // FORMA 2: Inyectar directamente al motor de audio del sistema
+        if (audioCtx) {
+            const remoteSource = audioCtx.createMediaStreamSource(remoteStream);
+            remoteSource.connect(audioCtx.destination);
+            // También lo conectamos al visualizador para ver si llega sonido
+            remoteSource.connect(analyser);
+        }
 
         document.getElementById('ptt-ring').classList.add('active');
         updateCounter();
@@ -144,7 +166,7 @@ function getOrCreatePC(remoteId) {
     };
 
     pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') log("CIFRADO ACTIVO CON " + remoteId);
+        if (pc.connectionState === 'connected') log("CANAL SEGURO ESTABLECIDO");
         if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
             delete peers[remoteId];
             document.getElementById(`audio-${remoteId}`)?.remove();
@@ -164,7 +186,7 @@ async function join() {
 }
 
 socket.on('mission_joined', (data) => {
-    log("Canal asegurado: " + data.mission);
+    log("Uplink activo: " + data.mission);
     document.getElementById('login-screen').classList.remove('active');
     document.getElementById('main-screen').classList.add('active');
     document.getElementById('channel-name').innerText = data.mission;
@@ -182,7 +204,7 @@ socket.on('mission_joined', (data) => {
 });
 
 socket.on('new_operator', (id) => {
-    log("Nueva unidad en red.");
+    log("Nueva unidad detectada.");
     getOrCreatePC(id);
     updateCounter();
 });
@@ -215,8 +237,8 @@ async function startSpeaking() {
     if (!myGain) return;
     if (audioCtx.state === 'suspended') await audioCtx.resume();
 
-    // Forzamos reproducción en todos los elementos audio al tocar el PTT (desbloqueo de sonido)
-    document.querySelectorAll('audio').forEach(a => a.play().catch(() => { text: 'Log: Forzando audio' }));
+    // Desbloqueo agresivo de altavoces
+    document.querySelectorAll('audio').forEach(a => a.play().catch(() => { }));
 
     myGain.gain.setValueAtTime(1, audioCtx.currentTime);
     pttBtn.classList.add('active');
@@ -228,8 +250,8 @@ function stopSpeaking() {
     if (!myGain) return;
     myGain.gain.setValueAtTime(0, audioCtx.currentTime);
     pttBtn.classList.remove('active');
-    updateCounter(); // Restaura el estado visual (STANDBY o SECURE LINK)
     document.getElementById('status-text').classList.remove('transmitting');
+    updateCounter();
 }
 
 if (pttBtn) {
