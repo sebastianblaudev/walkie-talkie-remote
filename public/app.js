@@ -320,6 +320,9 @@ socket.on('mission_joined', (data) => {
 
     // Render Channels
     renderChannels();
+
+    // Initialize User Count (Self)
+    updateUserCount();
 });
 
 socket.on('mission_error', (data) => {
@@ -705,6 +708,7 @@ async function createOffer(targetId) {
 socket.on('offer', async (data) => {
     if (!isPoweredOn) return;
     const pc = createPeerConnection(data.caller);
+    updateUserCount(); // Update UI for new peer
     await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
     const answer = await pc.createAnswer({
         offerToReceiveAudio: true
